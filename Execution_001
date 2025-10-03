@@ -1,0 +1,37 @@
+p = Params(
+    forgetting_window=5,
+    rand_ratio=0.2,
+    success_mode="levels",       
+    min_success_level="narrow"    # narrow | medium | advanced
+)
+
+
+scenarios = [
+    ("A2_C1_R1_NUM_DENOM",       [A2, C1,R1,complementary_1, complementary_2]),
+    ("B2(inclusive)_C1_C2_C3",    [B2_inclusive, complementary_1, complementary_2, complementary_3]),
+]
+
+results = run_scenarios_and_visualize(
+    scenarios=scenarios,
+    p=p,
+    runs=30,
+    steps=50,
+    viz="v3" 
+)
+
+summarize_results_table(
+    results,
+    p=p,
+    header="My Test Run (rand_ratio=0.1, forgetting_window=5)",
+    assoc_min_w=p.w_learn * 0.9,
+    require_units_learned_for_assoc=True
+)
+
+write_scenario_reports(
+    results,
+    header="My Test Run (rand_ratio=0.1, forgetting_window=5)",
+    p=p,
+    assoc_min_w=p.w_learn * 0.9,
+    require_units_learned_for_assoc=True,
+    out_dir="reports" 
+)
