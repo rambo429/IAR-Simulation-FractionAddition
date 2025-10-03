@@ -1,0 +1,2067 @@
+from __future__ import annotations
+import random
+import math
+from itertools import combinations, cycle
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Dict, Set, Tuple, Iterable, List, FrozenSet
+from typing import Optional
+
+# =====================================================
+# 1) Criteria units of target concepts 
+# =====================================================
+from typing import Dict, List, Tuple, Set, FrozenSet
+
+# =====================================================
+# 1) Criteria units (rules & flags also represented as composites of primitives)
+# =====================================================
+
+criteria = {
+    "units": {
+        # --- atomic sensory/conceptual components (operatives)
+        "WHOLE_IN_CONTEXT": {"components": []},
+        "PARTITION_IN_EQUAL_PARTS": {"components": []},
+        "SELECTED_EQUAL_PARTS_AMONG_ENTIRE": {"components": []},
+        "TOTAL_EQUAL_PARTS": {"components": []},
+        "NUMERATOR_1": {"components": []},
+
+        # Atomic primitives for common denominator sense
+        "NUMBER_DIVISIBLE_BY_MULTIPLE_DENOMINATORS": {"components": []},  # multiple/divisor alignment possible
+        "DENOMINATOR_AS_UNIT_SIZE": {"components": []},                   # denominator as unit-size sense
+
+        # Atomic primitives for equivalent fractions sense
+        "NUMERATOR_DENOMINATOR_RATIO_SAME": {"components": []},           # same numerator:denominator ratio
+        "RATIO_INVARIANCE": {"components": []},                           # invariance of ratio (scaling preserves ratio)
+        "SAME_NUMERATOR": {"components": []},                             # same numerator
+        "SAME_DENOMINATOR": {"components": []},                           # same denominator
+
+        # Addition-related and misconception-related primitives
+        "ADDITION": {"components": []},
+        "ADDING_NUMERATORS": {"components": []},                          # the act of adding numerators
+        "NUM_AS_WHOLE": {"components": []},                               # treats numerator as a whole number
+        "DENOM_AS_WHOLE": {"components": []},                             # treats denominator as a whole number
+        "OMITS_COMMON_DENOMINATOR": {"components": []},                   # omits considering common denominator
+        "DIFFERENT_DENOMINATORS_PRESENT": {"components": []},             # different denominators are present
+
+        # Rule markers
+        "RULE_MARKER": {"components": []},
+        "PROPER_MARKER": {"components": []},
+        "IMPROPER_MARKER": {"components": []},
+
+        # (Legacy compatibility)
+        "SAME_NUMERATOR_SAME_DENOMINATOR": {"components": []},
+
+        # --- Core fraction roles (composites)
+        "N_NUMERATOR": {
+            "components": [
+                "WHOLE_IN_CONTEXT",
+                "PARTITION_IN_EQUAL_PARTS",
+                "SELECTED_EQUAL_PARTS_AMONG_ENTIRE",
+            ]
+        },
+        "N_DENOMINATOR": {
+            "components": [
+                "WHOLE_IN_CONTEXT",
+                "PARTITION_IN_EQUAL_PARTS",
+                "TOTAL_EQUAL_PARTS",
+            ]
+        },
+        "UNIT_FRACTION": {"components": ["NUMERATOR_1", "N_DENOMINATOR"]},
+
+        # --- Denominator alignment / equivalence (2-atom)
+        "COMMON_DENOMINATOR": {
+            "components": [
+                "NUMBER_DIVISIBLE_BY_MULTIPLE_DENOMINATORS",
+                "DENOMINATOR_AS_UNIT_SIZE"
+            ]
+        },
+
+        # --- Equivalent fractions split (multi-atom)
+        "EQUIVALENT_FRACTIONS_GENERALIZED": {
+            "components": ["NUMERATOR_DENOMINATOR_RATIO_SAME", "RATIO_INVARIANCE"]
+        },
+        "EQUIVALENT_FRACTIONS_NARROW": {
+            "components": ["SAME_NUMERATOR", "SAME_DENOMINATOR"]
+        },
+
+        # --- Addition operations separated by context
+        "ADDING_NUMERATORS_OVER_SAME_DENOMINATOR": {
+            "components": ["ADDITION", "ADDING_NUMERATORS", "SAME_DENOMINATOR"]
+        },
+        "ADDING_NUMERATORS_OVER_COMMON_DENOMINATOR": {
+            "components": ["ADDITION", "ADDING_NUMERATORS", "COMMON_DENOMINATOR"]
+        },
+
+        # --- Aggregation split: narrow vs advanced
+        "AGGREGATION_NARROW": {
+            "components": [
+                "ADDING_NUMERATORS_OVER_SAME_DENOMINATOR",
+                "SAME_DENOMINATOR"
+            ]
+        },
+        "AGGREGATION_ADVANCED": {
+            "components": [
+                "ADDING_NUMERATORS_OVER_COMMON_DENOMINATOR",
+                "COMMON_DENOMINATOR"
+            ]
+        },
+
+        # (Legacy compatibility; unused in new logic)
+        "AGGREGATION": {"components": []},
+
+        # --- Rules / beliefs (rules represented as composites of primitives)
+        "RULE_PROPER_REQUIRE_COMMON_DENOMINATOR": {
+            "components": ["RULE_MARKER", "PROPER_MARKER", "COMMON_DENOMINATOR"]
+        },  # Proper rule requiring a common denominator
+
+        "RULE_PROPER_SAME_DENOM_AGGREGATION_OK": {
+            "components": ["RULE_MARKER", "PROPER_MARKER", "SAME_DENOMINATOR", "ADDING_NUMERATORS"]
+        },  # Proper rule allowing aggregation with same denominator
+
+        "RULE_IMPROPER_TREAT_NUM_DEN_AS_SEPARATE_WHOLE_NUMBERS_SO_ADD_NUM_AND_DEN": {
+            "components": ["RULE_MARKER", "IMPROPER_MARKER", "ADDITION", "NUM_AS_WHOLE", "DENOM_AS_WHOLE"]
+        },  # Misconception: treating numerator and denominator as separate whole numbers and adding them
+
+        "RULE_IMPROPER_MISS_COMMON_DENOMINATOR": {
+            "components": ["RULE_MARKER", "IMPROPER_MARKER", "OMITS_COMMON_DENOMINATOR"]
+        },  # Misconception: missing the common denominator
+
+        # --- Miscellaneous (contextual flags) as composites
+        "COMMON_DENOMINATOR_CONVERSION_NEEDED": {
+            "components": ["DIFFERENT_DENOMINATORS_PRESENT", "COMMON_DENOMINATOR", "N_DENOMINATOR"]
+        },
+        "COUNTER_CASE": {
+            "components": ["IMPROPER_MARKER", "ADDITION", "NUM_AS_WHOLE", "DENOM_AS_WHOLE"]
+        },
+    }
+}
+
+# =====================================================
+# 2) Target & Misconception queries (with conceptual levels)
+#     - Aggregation narrow/advanced reflected
+#     - Equivalent Fractions handled inside criteria
+# =====================================================
+
+TARGET_ASSOCS_LEVELS: Dict[str, List[Tuple[str, ...]]] = {
+    # Advanced: common denominator alignment + generalized equivalent fractions + rules
+    "advanced": [
+        ("EQUIVALENT_FRACTIONS_GENERALIZED", "N_NUMERATOR", "AGGREGATION_ADVANCED",
+         "COMMON_DENOMINATOR", "RULE_PROPER_REQUIRE_COMMON_DENOMINATOR"),
+        ("EQUIVALENT_FRACTIONS_GENERALIZED", "N_NUMERATOR", "AGGREGATION_ADVANCED",
+         "COMMON_DENOMINATOR", "RULE_PROPER_SAME_DENOM_AGGREGATION_OK"),
+    ],
+    # Medium: common denominator alignment + aggregation
+    "medium": [
+        ("N_NUMERATOR", "AGGREGATION_ADVANCED", "COMMON_DENOMINATOR", "RULE_PROPER_REQUIRE_COMMON_DENOMINATOR"),
+        ("N_NUMERATOR", "AGGREGATION_ADVANCED", "COMMON_DENOMINATOR", "RULE_PROPER_SAME_DENOM_AGGREGATION_OK"),
+    ],
+    # Narrow: addition with same denominator
+    "narrow": [
+        ("SAME_DENOMINATOR", "N_NUMERATOR", "AGGREGATION_NARROW"),
+        ("EQUIVALENT_FRACTIONS_NARROW", "N_NUMERATOR", "AGGREGATION_NARROW"),
+    ],
+}
+
+# Flattened target associations for general success check
+TARGET_ASSOCS: List[Tuple[str, ...]] = sum(TARGET_ASSOCS_LEVELS.values(), [])
+
+# Misconception bundles — capture both legacy AGGREGATION and new NARROW/ADVANCED forms
+MISCON_ASSOCS: List[Tuple[str, ...]] = [
+    # (Legacy) captured under AGGREGATION
+    ("N_NUMERATOR", "N_DENOMINATOR", "AGGREGATION",
+     "RULE_IMPROPER_TREAT_NUM_DEN_AS_SEPARATE_WHOLE_NUMBERS_SO_ADD_NUM_AND_DEN"),
+    ("N_NUMERATOR", "N_DENOMINATOR", "AGGREGATION",
+     "RULE_IMPROPER_MISS_COMMON_DENOMINATOR"),
+
+    # (New) captured under AGGREGATION_NARROW/ADVANCED
+    ("N_NUMERATOR", "N_DENOMINATOR", "AGGREGATION_NARROW",
+     "RULE_IMPROPER_TREAT_NUM_DEN_AS_SEPARATE_WHOLE_NUMBERS_SO_ADD_NUM_AND_DEN"),
+    ("N_NUMERATOR", "N_DENOMINATOR", "AGGREGATION_NARROW",
+     "RULE_IMPROPER_MISS_COMMON_DENOMINATOR"),
+
+    ("N_NUMERATOR", "N_DENOMINATOR", "AGGREGATION_ADVANCED",
+     "RULE_IMPROPER_TREAT_NUM_DEN_AS_SEPARATE_WHOLE_NUMBERS_SO_ADD_NUM_AND_DEN"),
+    ("N_NUMERATOR", "N_DENOMINATOR", "AGGREGATION_ADVANCED",
+     "RULE_IMPROPER_MISS_COMMON_DENOMINATOR"),
+]
+
+# Legacy success keys (if absent → empty)
+try:
+    TARGET_ASSOCS
+except NameError:
+    TARGET_ASSOCS = []
+TARGET_KEYS = {frozenset(t) for t in TARGET_ASSOCS}
+MISCON_KEYS: Set[FrozenSet[str]] = {frozenset(a) for a in MISCON_ASSOCS}
+
+# Atom pool for random stimuli (including new atoms)
+RANDOM_ATOMS: List[str] = sorted(list({
+    *criteria["units"].keys(),
+}))
+
+# =====================================================
+# 3) Bundles (intervention templates) — PRIMITIVES INCLUDED
+# =====================================================
+# =========================
+# Bundles: brief vs inclusive
+# =========================
+
+# -------------------------
+# B1: Same denominators (narrow aggregation)
+# - AGGREGATION_NARROW = ADDING_NUMERATORS_OVER_SAME_DENOMINATOR + SAME_DENOMINATOR
+# - RULE_PROPER_SAME_DENOM_AGGREGATION_OK = RULE_MARKER + PROPER_MARKER + SAME_DENOMINATOR + ADDING_NUMERATORS
+# -------------------------
+
+A1 = {
+    "id": "A1_Aggregation_Narrow",
+    "units": {
+        "AGGREGATION_NARROW",
+        # Focus on upper/target composites (minimize directly presenting lower primitives)
+        "ADDING_NUMERATORS_OVER_SAME_DENOMINATOR",
+        "SAME_DENOMINATOR",
+    }
+}
+
+A2 = {
+    "id": "A2_Aggregation_Advanced",
+    "units": {
+        "AGGREGATION_ADVANCED",
+        # Focus on upper/target composites (minimize directly presenting lower primitives)
+        "ADDING_NUMERATORS_OVER_COMMON_DENOMINATOR",
+        "COMMON_DENOMINATOR",
+    }
+}
+
+C1 ={
+    "id": "C_Common_Denominator",
+    "units": {
+        "NUMBER_DIVISIBLE_BY_MULTIPLE_DENOMINATORS",
+        "DENOMINATOR_AS_UNIT_SIZE",
+    }
+}
+
+R1 ={
+    "id": "R1_REQUIRE_COMMON_DENOMINATOR",
+    "units": {
+        "RULE_PROPER_REQUIRE_COMMON_DENOMINATOR",
+        "RULE_MARKER", 
+        "PROPER_MARKER", 
+        "COMMON_DENOMINATOR",
+    }
+}
+
+R2 ={
+    "id": "R2_SAME_DENOM_AGGREGATION_OK",
+    "units": {
+        "RULE_PROPER_SAME_DENOM_AGGREGATION_OK",
+        "RULE_MARKER", 
+        "SAME_DENOMINATOR", 
+        "ADDING_NUMERATORS"
+    }
+}
+
+B1_brief = {
+    "id": "B1_brief_same_denominators",
+    "units": {
+        # Focus on upper/target composites (minimize directly presenting lower primitives)
+        "AGGREGATION_NARROW",
+        "SAME_DENOMINATOR",
+        "N_NUMERATOR", "N_DENOMINATOR",
+        "RULE_PROPER_SAME_DENOM_AGGREGATION_OK",
+    }
+}
+
+B1_inclusive = {
+    "id": "B1_inclusive_same_denominators",
+    "units": {
+        # Upper/target
+        "AGGREGATION_NARROW",
+        "SAME_DENOMINATOR",
+        "N_NUMERATOR", "N_DENOMINATOR",
+        "RULE_PROPER_SAME_DENOM_AGGREGATION_OK",
+        # Simultaneously reinforce primitives and lower composites
+        "ADDING_NUMERATORS_OVER_SAME_DENOMINATOR",   # (= ADDITION + ADDING_NUMERATORS + SAME_DENOMINATOR)
+        "ADDITION", "ADDING_NUMERATORS",
+        "RULE_MARKER", "PROPER_MARKER",
+    }
+}
+
+# -------------------------
+# B2: Common-denominator alignment (advanced aggregation)
+# - AGGREGATION_ADVANCED = ADDING_NUMERATORS_OVER_COMMON_DENOMINATOR + COMMON_DENOMINATOR
+# - RULE_PROPER_REQUIRE_COMMON_DENOMINATOR = RULE_MARKER + PROPER_MARKER + COMMON_DENOMINATOR
+# -------------------------
+
+B2_brief = {
+    "id": "B2_brief_add_numerator_over_common_denominator",
+    "units": {
+        # Focus on upper/target composites
+        "AGGREGATION_ADVANCED",
+        "COMMON_DENOMINATOR",
+        "RULE_PROPER_REQUIRE_COMMON_DENOMINATOR",
+        "N_NUMERATOR",
+    }
+}
+
+B2_inclusive = {
+    "id": "B2_inclusive_add_numerator_over_common_denominator",
+    "units": {
+        # Upper/target
+        "AGGREGATION_ADVANCED",
+        "COMMON_DENOMINATOR",
+        "RULE_PROPER_REQUIRE_COMMON_DENOMINATOR",
+        "N_NUMERATOR",
+        # Simultaneously reinforce primitives and lower composites
+        "COMMON_DENOMINATOR_CONVERSION_NEEDED",
+        "ADDING_NUMERATORS_OVER_COMMON_DENOMINATOR",  # (= ADDITION + ADDING_NUMERATORS + COMMON_DENOMINATOR)
+        "NUMBER_DIVISIBLE_BY_MULTIPLE_DENOMINATORS",
+        "DENOMINATOR_AS_UNIT_SIZE",
+        "ADDITION", "ADDING_NUMERATORS",
+        "RULE_MARKER", "PROPER_MARKER",
+    }
+}
+
+# -------------------------
+# B3: Common-denominator sense + Equivalent Fractions (Generalized)
+# - EQUIVALENT_FRACTIONS_GENERALIZED = NUMERATOR_DENOMINATOR_RATIO_SAME + RATIO_INVARIANCE
+# - COMMON_DENOMINATOR = NUMBER_DIVISIBLE_BY_MULTIPLE_DENOMINATORS + DENOMINATOR_AS_UNIT_SIZE
+# -------------------------
+
+B3_brief = {
+    "id": "B3_brief_emphasis_on_common_denominator",
+    "units": {
+        # Focus on upper/target composites
+        "COMMON_DENOMINATOR",
+        "EQUIVALENT_FRACTIONS_GENERALIZED",
+        "N_DENOMINATOR",
+    }
+}
+
+B3_inclusive = {
+    "id": "B3_inclusive_emphasis_on_common_denominator",
+    "units": {
+        # Upper/target
+        "COMMON_DENOMINATOR",
+        "EQUIVALENT_FRACTIONS_GENERALIZED",
+        "N_DENOMINATOR",
+        # Simultaneously reinforce primitives
+        "NUMERATOR_DENOMINATOR_RATIO_SAME",
+        "RATIO_INVARIANCE",
+        "NUMBER_DIVISIBLE_BY_MULTIPLE_DENOMINATORS",
+        "DENOMINATOR_AS_UNIT_SIZE",
+    }
+}
+
+# -------------------------
+# B3b: Common denominator + (advanced) aggregation simultaneously
+# -------------------------
+
+B3b_brief = {
+    "id": "B3b_brief_common_den_plus_aggregation",
+    "units": {
+        # Focus on upper/target composites
+        "COMMON_DENOMINATOR",
+        "EQUIVALENT_FRACTIONS_GENERALIZED",
+        "N_DENOMINATOR",
+        "AGGREGATION_ADVANCED",
+    }
+}
+
+B3b_inclusive = {
+    "id": "B3b_inclusive_common_den_plus_aggregation",
+    "units": {
+        # Upper/target
+        "COMMON_DENOMINATOR",
+        "EQUIVALENT_FRACTIONS_GENERALIZED",
+        "N_DENOMINATOR",
+        "AGGREGATION_ADVANCED",
+        # Simultaneously reinforce primitives and lower composites
+        "ADDING_NUMERATORS_OVER_COMMON_DENOMINATOR",
+        "ADDITION", "ADDING_NUMERATORS",
+        "NUMERATOR_DENOMINATOR_RATIO_SAME",
+        "RATIO_INVARIANCE",
+        "NUMBER_DIVISIBLE_BY_MULTIPLE_DENOMINATORS",
+        "DENOMINATOR_AS_UNIT_SIZE",
+    }
+}
+
+# Emphasize only the incorrect pattern (counterexample)
+B4 = {
+    "id": "B4_counterexample",
+    "units": {
+        "COUNTER_CASE",  # (= IMPROPER_MARKER + ADDITION + NUM_AS_WHOLE + DENOM_AS_WHOLE)
+        "RULE_IMPROPER_TREAT_NUM_DEN_AS_SEPARATE_WHOLE_NUMBERS_SO_ADD_NUM_AND_DEN",
+        # Also directly reinforce counterexample primitives (so the model can "structurally" recognize what is wrong)
+        "IMPROPER_MARKER", "ADDITION", "NUM_AS_WHOLE", "DENOM_AS_WHOLE",
+    }
+}
+
+# Present counterexample + correct via rules/aggregation
+B4_fix = {
+    "id": "B4_fix_counterexample_with_rule",
+    "units": {
+        # counterexample
+        "COUNTER_CASE",
+        "RULE_IMPROPER_TREAT_NUM_DEN_AS_SEPARATE_WHOLE_NUMBERS_SO_ADD_NUM_AND_DEN",
+        "IMPROPER_MARKER", "ADDITION", "NUM_AS_WHOLE", "DENOM_AS_WHOLE",
+        # correction targets/composites
+        "RULE_PROPER_REQUIRE_COMMON_DENOMINATOR",
+        "AGGREGATION_ADVANCED",
+        # primitives and lower composites to support correction
+        "RULE_MARKER", "PROPER_MARKER",
+        "COMMON_DENOMINATOR",
+        "ADDING_NUMERATORS_OVER_COMMON_DENOMINATOR",
+        "ADDITION", "ADDING_NUMERATORS",
+        "NUMBER_DIVISIBLE_BY_MULTIPLE_DENOMINATORS",
+        "DENOMINATOR_AS_UNIT_SIZE",
+    }
+}
+
+# =========================================
+# Complimentary bundles (components focus)
+# =========================================
+complementary_1 = {
+    "id": "complementary_1_num",
+    "units": {
+        "N_NUMERATOR",
+        "WHOLE_IN_CONTEXT",
+        "PARTITION_IN_EQUAL_PARTS",
+        "SELECTED_EQUAL_PARTS_AMONG_ENTIRE",
+    },
+}
+
+complementary_2 = {
+    "id": "complementary_2_den",
+    "units": {
+        "N_DENOMINATOR",
+        "WHOLE_IN_CONTEXT",
+        "PARTITION_IN_EQUAL_PARTS",
+        "TOTAL_EQUAL_PARTS",
+    },
+}
+
+complementary_3 = {
+    "id": "complementary_3_num_and_den",
+    "units": {
+        "N_NUMERATOR",
+        "N_DENOMINATOR",
+        "WHOLE_IN_CONTEXT",
+        "PARTITION_IN_EQUAL_PARTS",
+        "SELECTED_EQUAL_PARTS_AMONG_ENTIRE",
+        "TOTAL_EQUAL_PARTS",
+    },
+}
+
+# =====================================================
+# 4) Parameters
+# =====================================================
+@dataclass
+class Params:
+    # Identification (unit learning)
+    base_rep_thresh: int = 3
+    alpha_comp: float = 0.25
+    beta_assoc: float = 0.2
+
+    # Composite learning requirement
+    comp_assoc_w_learn: float = 0.6
+
+    # Association (structural weights)
+    max_assoc_size: int = 4
+    eta: float = 0.35
+    w_learn: float = 0.75
+    tau: float = 35.0
+
+    # Retention / forgetting for units
+    forgetting_window: int = 20
+
+    # Retrieval (internal reactivation)
+    retrieval_prob: float = 0.35
+    retrieval_k_units: int = 2
+    retrieval_k_assocs: int = 1
+
+    # Competition
+    inhib_gamma: float = 0.25
+    belief_decay_prob: float = 0.15
+    oppose_create_at: float = 0.6
+        
+    # Stimuli mixing
+    rand_ratio: float = 0.5
+    random_k: int = 6
+
+    # Success check
+    require_unit_learn_for_success: bool = True
+
+    # === NEW: Working-memory cap (how many units can be processed in a step) ===
+    wm_k_min: int = 5
+    wm_k_max: int = 10
+
+    # === NEW: Association-strength schedule for composites ===
+    # full when ALL components appear (without CU)
+    eta_comp_full: float = 0.35
+    # partial when CU + subset of components appear → eta_partial_base * (k/|C|)
+    eta_partial_base: float = 0.35
+    # full when CU + ALL components appear
+    eta_full_with_cu: float = 0.35
+    # weak when ONLY CU appears (no components present)
+    eta_weak_only_cu: float = 0.12
+        
+    # Success mode (emergent-by-levels vs legacy assoc-key)
+    success_mode: str = "levels"          # "levels" | "assoc_key"
+    min_success_level: str = "narrow"     # "narrow" | "medium" | "advanced"
+        
+    # Retrieval config
+    retrieval_outside_wm: bool = True  # default True: add retrieval after WM cut
+    retrieval_cap: int = 10            # cap for number of reactivated units
+
+# =====================================================
+# 5) Agent
+# =====================================================
+@dataclass
+class Agent:
+    p: Params
+    step_i: int = 0
+    fail_pick_agent: Optional['Agent'] = None  # (left for compatibility)
+    # New field: record last level achievements at the time of the latest success() call
+    last_levels: Dict[str, bool] = field(default_factory=dict)
+
+    # Identification
+    exposure: Dict[str, int] = field(default_factory=lambda: defaultdict(int)) # str=unit name & int=exposure count
+    last_seen: Dict[str, int] = field(default_factory=dict) # str=unit & int=last step seen (for forgetting)
+    learned_units: Set[str] = field(default_factory=set) # currently learned units (qualitative state)
+
+    # Association
+    w: Dict[FrozenSet[str], float] = field(default_factory=lambda: defaultdict(float))
+    assoc_last_seen: Dict[FrozenSet[str], int] = field(default_factory=dict)
+    
+    # Track direct opposition relationships between associations (optional)
+    oppositions: Dict[FrozenSet[str], Set[FrozenSet[str]]] = field(
+        default_factory=lambda: defaultdict(set)
+    )
+
+    # --- helper: effective threshold (soft modulation) ---
+    def effective_rep_thresh(self, unit: str) -> float:
+        base = self.p.base_rep_thresh
+        comps = criteria["units"].get(unit, {}).get("components", [])
+        if comps:
+            comp_exp = sum(self.exposure.get(c, 0) for c in comps) / max(1, len(comps))
+            base -= self.p.alpha_comp * comp_exp
+        assoc_boost = 0.0
+        for key, wt in self.w.items():
+            if unit in key:
+                assoc_boost = max(assoc_boost, wt)
+        base -= self.p.beta_assoc * assoc_boost
+        return max(1.0, base)
+
+    # --- helper: composite check (HARD requirement for composite units) ---
+    def composite_ready(self, unit: str) -> bool:
+        comps = criteria["units"].get(unit, {}).get("components", [])
+        if not comps:
+            return True
+        # (1) all component operatives identified (either learned or exposure beyond their own thresholds)
+        for c in comps:
+            if not (c in self.learned_units or self.exposure.get(c, 0) >= self.effective_rep_thresh(c)):
+                return False
+        # (2) components must be associated as a single composite (weight threshold)
+        comp_key = frozenset(comps)
+        return self.w.get(comp_key, 0.0) >= self.p.comp_assoc_w_learn
+
+    def _retrieval_units(self) -> Set[str]:
+        ret = set()
+
+        # 1) top-k units by exposure
+        top_units = sorted(
+            self.exposure.items(),
+            key=lambda kv: kv[1],
+            reverse=True
+        )[: self.p.retrieval_k_units]
+        ret.update(u for u, _ in top_units)
+
+        # 2) top-a associations by weight → add their member units
+        top_keys = sorted(
+            self.w.items(),
+            key=lambda kv: kv[1],
+            reverse=True
+        )[: self.p.retrieval_k_assocs]
+        for key, _ in top_keys:
+            ret.update(key)  # key is frozenset[str]
+
+        # 3) apply retrieval_cap (default 10)
+        cap = getattr(self.p, "retrieval_cap", 10)
+        if cap is not None and cap > 0 and len(ret) > cap:
+            ret = set(random.sample(list(ret), cap))
+
+        return ret
+
+    # ----------------------
+    # Core step
+    # ----------------------
+    def step(self, external_stim: Set[str]):
+        self.step_i += 1
+
+        # --- retrieval (configurable: before or after WM cut) ---
+        stim = set(external_stim)
+        
+        if not self.p.retrieval_outside_wm:
+            if random.random() < self.p.retrieval_prob:
+                stim.update(self._retrieval_units())
+
+        # --- Working-memory cap ---
+        if len(stim) > 0:
+            wm_k = random.randint(self.p.wm_k_min, self.p.wm_k_max)
+            if len(stim) > wm_k:
+                stim = set(random.sample(list(stim), wm_k))
+
+        if self.p.retrieval_outside_wm:
+            # New: add retrieval AFTER the WM cut
+            if random.random() < self.p.retrieval_prob:
+                stim.update(self._retrieval_units())
+
+        # --- Identification ---
+        for u in stim:
+            self.exposure[u] += 1
+            self.last_seen[u] = self.step_i
+            if self.exposure[u] >= self.effective_rep_thresh(u) and self.composite_ready(u):
+                self.learned_units.add(u)
+
+        # === ONLY criteria-defined composites produce association learning ===
+        strengthened_targets: List[FrozenSet[str]] = []
+
+        def _bump_assoc(key: FrozenSet[str], eta_eff: float):
+            if len(key) < 2:
+                return
+            prev = self.w[key]
+            newv = prev + eta_eff * (1.0 - prev)
+            if newv > prev:
+                self.w[key] = newv
+                self.assoc_last_seen[key] = self.step_i
+                if key in TARGET_KEYS:
+                    strengthened_targets.append(key)
+
+        # Key idea: scan all composite units (CU) defined in criteria
+        for CU, meta in criteria["units"].items():
+            comps: List[str] = meta.get("components", [])
+            if not comps:
+                continue  # skip atoms
+            C = set(comps)
+            m = len(C)
+
+            present_components = C.intersection(stim)
+            k = len(present_components)
+            cu_in = CU in stim
+
+            # Case A) Only components appear (ALL) without the CU → strengthen association among components
+            if k == m:
+                _bump_assoc(frozenset(C), self.p.eta_comp_full)
+
+            # Case B) CU appears → strengthen {CU}∪components, scaled by how many components are present
+            if cu_in:
+                if k == 0:
+                    eta_eff = self.p.eta_weak_only_cu          # CU only
+                elif k == m:
+                    eta_eff = self.p.eta_full_with_cu          # CU + ALL components
+                else:
+                    eta_eff = self.p.eta_partial_base * (k / m)  # CU + subset of components
+                _bump_assoc(frozenset({CU, *C}), eta_eff)
+
+        # --- Retention ---
+        for u, last in list(self.last_seen.items()):
+            if self.step_i - last > self.p.forgetting_window:
+                self.exposure[u] = max(0, self.exposure[u] - 1)
+                self.last_seen[u] = self.step_i
+                if (u in self.learned_units) and not (self.exposure[u] >= self.effective_rep_thresh(u) and self.composite_ready(u)):
+                    self.learned_units.discard(u)
+
+        for key, last in list(self.assoc_last_seen.items()):
+            dt = self.step_i - last
+            if dt > 0:
+                decay = math.exp(-dt / self.p.tau)
+                self.w[key] *= decay
+                self.assoc_last_seen[key] = self.step_i
+
+        # --- Competition ---
+        if strengthened_targets:
+            opposed_mkeys: Set[FrozenSet[str]] = set()
+            for tkey in strengthened_targets:
+                if tkey in self.oppositions:
+                    opposed_mkeys.update(self.oppositions[tkey])
+            for mkey in opposed_mkeys:
+                if self.w.get(mkey, 0.0) > 0.0:
+                    self.w[mkey] *= (1.0 - self.p.inhib_gamma)
+                for u in mkey:
+                    if isinstance(u, str) and u.startswith("RULE_IMPROPER_") and random.random() < self.p.belief_decay_prob:
+                        self.exposure[u] = max(0, self.exposure.get(u, 0) - 1)
+                        if u in self.learned_units and not (self.exposure[u] >= self.effective_rep_thresh(u) and self.composite_ready(u)):
+                            self.learned_units.discard(u)
+
+    # ----------------------
+    # Success / status
+    # ----------------------
+    def success(self) -> bool:
+        mode = getattr(self.p, "success_mode", "levels")
+        if mode == "levels":
+            # 1) compute level achievements at each call and store
+            reached = levels_reached_emergent(
+                self,
+                thr_w=getattr(self.p, "w_learn", 0.75),
+                require_learn_for_success=getattr(self.p, "require_unit_learn_for_success", True)
+            )
+            self.last_levels = dict(reached)  # keep the latest status
+
+            # 2) success if any level >= min_success_level is True
+            min_lvl = getattr(self.p, "min_success_level", "medium")
+            order = ["narrow", "medium", "advanced"]
+            want = set(order[order.index(min_lvl):])
+            return any(reached.get(lvl, False) for lvl in want)
+
+        # --- legacy fall-back (assoc_key) ---
+        reached_legacy = levels_reached_by_assoc_key(self)
+        self.last_levels = dict(reached_legacy)
+
+        for tkey in {frozenset(a) for a in TARGET_ASSOCS}:
+            if self.w.get(tkey, 0.0) >= self.p.w_learn:
+                if not self.p.require_unit_learn_for_success:
+                    return True
+                if all((u in self.learned_units) for u in tkey):
+                    return True
+        return False
+
+    def snapshot(self) -> dict:
+        return {
+            "step": self.step_i,
+            "learned_units": sorted(list(self.learned_units)),
+            "top_assocs": sorted([(tuple(sorted(k)), round(w, 3)) for k, w in self.w.items()], key=lambda x: -x[1])[:10],
+            }
+
+# ===== Emergent success helpers (put right after Agent class) =====
+def _unit_is_composite(u: str) -> bool:
+    return bool(criteria["units"].get(u, {}).get("components", []))
+
+def _composite_weight(agent: 'Agent', unit: str) -> float | None:
+    comps = criteria["units"].get(unit, {}).get("components", [])
+    if not comps:
+        return None
+    return agent.w.get(frozenset(comps), 0.0)
+
+def unit_emerged(agent: 'Agent',
+                 unit: str,
+                 thr_w: float | None = None,
+                 require_learn_for_success: bool | None = None) -> bool:
+    """Atomic unit: OK if learned.
+       Composite unit: requires association weight w ≥ thr_w AND (optionally) the unit itself learned.
+    """
+    if thr_w is None:
+        thr_w = getattr(agent.p, "w_learn", 0.75)
+    if require_learn_for_success is None:
+        require_learn_for_success = getattr(agent.p, "require_unit_learn_for_success", True)
+
+    if not _unit_is_composite(unit):
+        return (unit in agent.learned_units)
+
+    w = _composite_weight(agent, unit) or 0.0
+    ok_assoc = (w >= thr_w)
+    ok_learn = True if not require_learn_for_success else (unit in agent.learned_units)
+    return ok_assoc and ok_learn
+
+def tuple_emerged(agent: 'Agent',
+                  units: tuple[str, ...],
+                  thr_w: float | None = None,
+                  require_learn_for_success: bool | None = None) -> bool:
+    return all(unit_emerged(agent, u, thr_w, require_learn_for_success) for u in units)
+
+def levels_reached_emergent(agent: 'Agent',
+                            thr_w: float | None = None,
+                            require_learn_for_success: bool | None = None) -> dict[str, bool]:
+    """For each level in TARGET_ASSOCS_LEVELS, True if any defined tuple has emerged."""
+    out = {}
+    for lvl, tuples in TARGET_ASSOCS_LEVELS.items():
+        out[lvl] = any(tuple_emerged(agent, tup, thr_w, require_learn_for_success) for tup in tuples)
+    return out
+
+# ===== end helpers =====
+
+# ===== Failure diagnostics (levels-based) =====
+from dataclasses import asdict
+
+def _level_order() -> List[str]:
+    return ["narrow", "medium", "advanced"]
+
+def _eligible_level_names(min_level: str) -> List[str]:
+    order = _level_order()
+    i = order.index(min_level)
+    return order[i:]
+
+def _tuple_progress(agent: 'Agent',
+                    tup: Tuple[str, ...],
+                    thr_w: float,
+                    require_learn_for_success: bool) -> Tuple[float, List[dict]]:
+    """
+    For each candidate tuple, compute achievement score (0~1) and list of missing pieces.
+    - Atomic unit: 1 if learned else 0
+    - Composite unit: min( w/thr_w, 1 ) × (1 if learned or not-required else 0)
+    """
+    parts: List[dict] = []
+    score = 0.0
+    for u in tup:
+        is_comp = _unit_is_composite(u)
+        learned = (u in agent.learned_units)
+        w = _composite_weight(agent, u) if is_comp else None
+
+        if not is_comp:
+            s = 1.0 if learned else 0.0
+            parts.append({
+                "unit": u, "is_composite": False, "learned": learned, "assoc_w": None, "score": s
+            })
+            score += s
+            continue
+
+        wval = float(w or 0.0)
+        assoc_ratio = min(wval / max(thr_w, 1e-9), 1.0) if thr_w > 0 else 1.0
+        learn_ok = (True if not require_learn_for_success else learned)
+        s = assoc_ratio * (1.0 if learn_ok else 0.0)
+        parts.append({
+            "unit": u, "is_composite": True, "learned": learned, "assoc_w": wval,
+            "assoc_needed": thr_w, "score": s
+        })
+        score += s
+
+    return score / max(1, len(tup)), parts
+
+def diagnose_failure_by_levels(agent: 'Agent',
+                               p: 'Params',
+                               min_level: Optional[str] = None,
+                               top_n: int = 5) -> dict:
+    """
+    For all target tuples at/above min_level, report:
+    - best candidate tuple (highest score)
+    - missing elements in that tuple (sorted)
+    """
+    thr_w = getattr(p, "w_learn", 0.75)
+    require_learn = getattr(p, "require_unit_learn_for_success", True)
+    min_lvl = (min_level or getattr(p, "min_success_level", "medium"))
+
+    eligible_lvls = _eligible_level_names(min_lvl)
+    candidates: List[Tuple[str, ...]] = []
+    for lvl in eligible_lvls:
+        candidates.extend(TARGET_ASSOCS_LEVELS.get(lvl, []))
+
+    best = None
+    best_score = -1.0
+    best_parts = None
+
+    for tup in candidates:
+        sc, parts = _tuple_progress(agent, tup, thr_w, require_learn)
+        if sc > best_score:
+            best = tup
+            best_score = sc
+            best_parts = parts
+
+    report_missing: List[dict] = []
+    if best and best_parts:
+        # Missing elements = items with score < 1
+        for part in best_parts:
+            if part["score"] >= 1.0:
+                continue
+            if part["is_composite"]:
+                need_assoc = (part["assoc_w"] or 0.0) < thr_w
+                need_learn = require_learn and (not part["learned"])
+                if need_assoc or need_learn:
+                    gap = 0.0
+                    if need_assoc:
+                        gap = max(0.0, thr_w - float(part["assoc_w"] or 0.0))
+                    report_missing.append({
+                        "unit": part["unit"],
+                        "type": "composite",
+                        "assoc_w": round(float(part["assoc_w"] or 0.0), 3),
+                        "assoc_needed": thr_w,
+                        "need_learn": bool(need_learn),
+                        "gap": round(gap, 3)
+                    })
+            else:
+                if not part["learned"]:
+                    report_missing.append({
+                        "unit": part["unit"],
+                        "type": "atomic",
+                        "need_learn": True
+                    })
+
+        # Sort by severity: composites first (larger association gap first) → then atomics
+        def _sev_key(d: dict):
+            if d["type"] == "composite":
+                return (0, -float(d.get("gap", 0.0)), not d.get("need_learn", False))
+            return (1, 0.0, 0)
+        report_missing.sort(key=_sev_key)
+        if top_n is not None:
+            report_missing = report_missing[:top_n]
+
+    return {
+        "mode": "levels",
+        "min_level": min_lvl,
+        "eligible_levels": eligible_lvls,
+        "best_tuple": list(best) if best else None,
+        "best_tuple_score": round(best_score, 3) if best_score >= 0 else None,
+        "missing": report_missing
+    }
+
+def diagnose_all_levels_gaps(
+    agent: 'Agent',
+    p: 'Params',
+    *,
+    levels: List[str] = ("narrow", "medium", "advanced"),
+    thr_w: Optional[float] = None,
+    require_learn_for_success: Optional[bool] = None,
+    top_n: int = 7
+) -> Dict[str, dict]:
+    """
+    For each level:
+      - check if level has emerged (True/False)
+      - if failed, return the closest tuple and its missing elements
+
+    Return format:
+    {
+      "narrow": {
+        "reached": True/False,
+        "best_tuple": [...],
+        "best_tuple_score": 0.0~1.0,
+        "missing": [
+           { "unit": "...", "type": "atomic" },
+           { "unit": "...", "type": "composite", "assoc_w": 0.12, "assoc_needed": 0.75, "need_learn": True/False }
+        ]
+      },
+      "medium": { ... },
+      "advanced": { ... }
+    }
+    """
+    if thr_w is None:
+        thr_w = getattr(p, "w_learn", 0.75)
+    if require_learn_for_success is None:
+        require_learn_for_success = getattr(p, "require_unit_learn_for_success", True)
+
+    def _status_for_unit(u: str) -> dict:
+        if not _unit_is_composite(u):
+            ok = (u in agent.learned_units)
+            return {"unit": u, "type": "atomic", "ok": ok}
+        w = _composite_weight(agent, u) or 0.0
+        ok_w = (w >= thr_w)
+        ok_learn = True if not require_learn_for_success else (u in agent.learned_units)
+        return {
+            "unit": u,
+            "type": "composite",
+            "ok": (ok_w and ok_learn),
+            "assoc_w": round(w, 3),
+            "assoc_needed": thr_w,
+            "need_learn": (require_learn_for_success and (u not in agent.learned_units))
+        }
+
+    out: Dict[str, dict] = {}
+
+    for lvl in levels:
+        tuples = TARGET_ASSOCS_LEVELS.get(lvl, [])
+        # Level reached?
+        reached = any(
+            tuple_emerged(agent, t, thr_w=thr_w, require_learn_for_success=require_learn_for_success)
+            for t in tuples
+        )
+        # If reached, mark and continue
+        if reached or not tuples:
+            out[lvl] = {
+                "reached": reached,
+                "best_tuple": None,
+                "best_tuple_score": 1.0 if reached else 0.0,
+                "missing": []
+            }
+            continue
+
+        # If not reached: compute each tuple's satisfaction ratio and pick the closest
+        best_tuple = None
+        best_score = -1.0
+        best_missing: List[dict] = []
+
+        for tup in tuples:
+            statuses = [_status_for_unit(u) for u in tup]
+            score = sum(1.0 for st in statuses if st["ok"]) / max(1, len(statuses))
+            if score > best_score:
+                best_score = score
+                best_tuple = list(tup)
+                best_missing = [
+                    {k: v for k, v in st.items() if k != "ok"}
+                    for st in statuses if not st["ok"]
+                ]
+
+        # Sort: composites first (by assoc_w), then atomics
+        def _missing_sort_key(m: dict):
+            if m.get("type") == "composite":
+                return (0, m.get("assoc_w", 0.0))
+            return (1, 0.0)
+
+        best_missing_sorted = sorted(best_missing, key=_missing_sort_key)
+        if top_n is not None:
+            best_missing_sorted = best_missing_sorted[:top_n]
+
+        out[lvl] = {
+            "reached": False,
+            "best_tuple": best_tuple,
+            "best_tuple_score": round(best_score, 3),
+            "missing": best_missing_sorted
+        }
+
+    return out
+
+# ===== end diagnostics =====
+
+def test_indent():
+    for u in [
+        "A",
+        "B",
+    ]:
+        print(u)
+
+print("OK")
+
+# =====================================================
+# 6) Seeding with misconception
+# =====================================================
+
+def seed_misconception(agent: Agent, strong: bool = True) -> None:
+    for u in [
+        "WHOLE_IN_CONTEXT",
+        "PARTITION_IN_EQUAL_PARTS",
+        "SELECTED_EQUAL_PARTS_AMONG_ENTIRE",
+        "TOTAL_EQUAL_PARTS",
+    ]:
+        agent.exposure[u] = 1
+
+    agent.exposure["N_NUMERATOR"] = 1
+    agent.exposure["N_DENOMINATOR"] = 1
+
+    # Seed one primary improper belief
+    bad = "RULE_IMPROPER_TREAT_NUM_DEN_AS_SEPARATE_WHOLE_NUMBERS_SO_ADD_NUM_AND_DEN"
+    agent.exposure[bad] = agent.p.base_rep_thresh
+    agent.learned_units.add(bad)
+
+    if strong:
+        for tup in MISCON_ASSOCS:
+            mkey = frozenset(tup)
+            agent.w[mkey] = max(agent.w[mkey], 0.5)
+            agent.assoc_last_seen[mkey] = agent.step_i
+
+# =====================================================
+# 7) Stimulus generation & experiments
+# =====================================================
+
+def random_stimuli(k: int) -> Set[str]:
+    return set(random.sample(RANDOM_ATOMS, min(k, len(RANDOM_ATOMS))))
+
+def mix_step(rand_ratio: float, bundle_units: Set[str] | None, p: Params) -> Set[str]:
+    if (random.random() < rand_ratio) or (not bundle_units):
+        return random_stimuli(p.random_k)
+    return random_stimuli(p.random_k) | set(bundle_units)
+
+# -----------------------------------------
+# Shared: level check (legacy kept)
+# -----------------------------------------
+def levels_reached_by_assoc_key(agent: 'Agent') -> Dict[str, bool]:
+    out: Dict[str, bool] = {}
+    for level, assoc_list in TARGET_ASSOCS_LEVELS.items():
+        hit = False
+        for tup in assoc_list:
+            key = frozenset(tup)
+            if agent.w.get(key, 0.0) >= agent.p.w_learn:
+                if agent.p.require_unit_learn_for_success and not all((u in agent.learned_units) for u in key):
+                    continue
+                hit = True
+                break
+        out[level] = hit
+    return out
+
+def run_experiment_unified(
+    bundles: List[dict],
+    p: Params,
+    runs: int = 1,
+    steps: int = 200,
+    seed: Optional[int] = None,
+    with_levels: bool = False,
+):
+    if seed is not None:
+        random.seed(seed)
+
+    successes_any = 0
+    steps_any: List[int] = []
+
+    # Level statistics containers
+    if with_levels:
+        level_counts = {lvl: 0 for lvl in TARGET_ASSOCS_LEVELS}
+        level_steps = {lvl: [] for lvl in TARGET_ASSOCS_LEVELS}
+        levels_at_first_success_freq = {lvl: 0 for lvl in TARGET_ASSOCS_LEVELS}
+
+    snapshots_all = []  # used only for single-run mode
+
+    for r in range(runs):
+        ag = Agent(p)
+        seed_misconception(ag, strong=True)
+        it = cycle(bundles) if bundles else None
+
+        success_at = None
+        level_at_success = None
+
+        for s in range(1, steps + 1):
+            bundle_units = next(it)["units"] if it else None
+            stim = mix_step(p.rand_ratio, bundle_units, p)
+            # If you want to expand composites into their components before step(), uncomment below:
+            # expanded = set(stim)
+            # for u in list(stim):
+            #     comps = criteria["units"].get(u, {}).get("components", [])
+            #     if comps:
+            #         expanded.update(comps)
+            # stim = expanded
+            ag.step(stim)
+
+            if runs == 1 and s in (1, 5, 10, 20, 40, 80, 120, 160, 200):
+                snapshots_all.append(ag.snapshot())
+
+            if ag.success():
+                success_at = s
+                if with_levels:
+                    if p.success_mode == "levels":
+                        level_at_success = levels_reached_emergent(
+                            ag,
+                            thr_w=getattr(p, "w_learn", 0.75),
+                            require_learn_for_success=getattr(p, "require_unit_learn_for_success", True)
+                        )
+                    else:
+                        level_at_success = levels_reached_by_assoc_key(ag)
+                break  # stop at first success
+
+        if success_at is not None:
+            successes_any += 1
+            steps_any.append(success_at)
+            if with_levels and level_at_success:
+                for lvl, ok in level_at_success.items():
+                    if ok:
+                        level_counts[lvl] += 1
+                        level_steps[lvl].append(success_at)
+                        levels_at_first_success_freq[lvl] += 1
+
+    prob = successes_any / runs if runs else 0.0
+    avg_steps = sum(steps_any) / len(steps_any) if steps_any else None
+
+    # Common summary
+    summary = {
+        "bundles": "+".join([b["id"] for b in bundles]) if bundles else "(Random only)",
+        "runs": runs,
+        "P_success": round(prob, 3),
+        "avg_steps_to_success": round(avg_steps, 2) if avg_steps else None,
+    }
+
+    if with_levels:
+        summary["per_level"] = {
+            lvl: {
+                "P_success": round(level_counts[lvl] / runs, 3),
+                "avg_steps": round(sum(level_steps[lvl]) / len(level_steps[lvl]), 2) if level_steps[lvl] else None,
+                "at_first_success_freq": levels_at_first_success_freq[lvl],
+            }
+            for lvl in TARGET_ASSOCS_LEVELS
+        }
+
+    if runs == 1:
+        summary["mode"] = "single"
+        summary["agent"] = ag
+        summary["success_at"] = success_at
+        summary["snapshots"] = snapshots_all
+        if with_levels:
+            summary["level_at_success"] = level_at_success
+    else:
+        summary["mode"] = "multi"
+        summary["successes"] = successes_any
+        summary["steps_limit"] = steps
+
+    return summary
+
+# =========================
+# Visualization v3 (refactor):
+#  - Associations → circle (dot) hubs with multiline labels
+#  - Learned composites → skyblue ellipses (embed ▲ components)  [not used in this v5; kept as conceptual note]
+#  - Operatives → triangles unless embedded
+#  - If an association has NO present skyblue nodes (i.e., none of its composite members are drawn/learned),
+#    render those composite members as HOLLOW SKYBLUE ellipses (placeholder) and connect with thin white edges
+# =========================
+from typing import Iterable, Tuple, List, Set, FrozenSet, Optional
+import datetime, re
+
+# ensure palette helpers are available
+try:
+    import matplotlib.cm as cm
+    import matplotlib.colors as mcolors
+except Exception:
+    cm = None
+    mcolors = None
+
+def _assoc_canonical_name(parts: List[str]) -> str:
+    return "[" + "-".join(sorted(parts)) + "]"
+
+def _color_for_k_assoc(k: int) -> str:
+    # 2→yellow, 3→green, 4→orange, 5+→red, fallback viridis
+    if k == 2: return 'yellow'
+    if k == 3: return 'green'
+    if k == 4: return 'orange'
+    if k >= 5: return 'red'
+    if mcolors is not None and cm is not None:
+        idx = max(min(k - 2, 9), 0)
+        return mcolors.to_hex(cm.get_cmap('viridis', 10)(idx / 9.0))
+    return '#cccccc'
+
+def visualize_agent_atlas_assoc_hubs(agent: 'Agent',
+                                     filename: str = "cog_atlas_assoc.html",
+                                     static: bool = True, random_seed: int = 42,
+                                     max_nodes: int = 450,
+                                     min_assoc_w: Optional[float] = None,
+                                     show_titles: bool = True) -> None:
+    """
+    v5 — Triangles (atoms) + Hubs (associations) only, with placeholder logic:
+      • Atom (components==[]): draw ONLY if learned, or if needed as placeholder under a learned association.
+          - learned  → blue ▲, white edges
+          - not learned but required by a learned assoc → hollow gray ▲, light-gray edges
+      • Association (components>=2):
+          - learned (w>=min_assoc_w) → colored hub ● (by k), connect to members
+          - member is learned assoc → draw its own hub ●, connect hub↔hub by white edge
+          - member is UNlearned assoc → draw hollow gray ● placeholder, connect hub↔placeholder by light-gray edge
+              · its atom members drawn as ▲:
+                  · learned → blue ▲, white edge to placeholder
+                  · unlearned → hollow gray ▲, light-gray edge to placeholder
+      • No skyblue ellipses.
+    """
+    try:
+        from pyvis.network import Network
+    except Exception:
+        print("⚠️ pyvis not installed: please `pip install pyvis` and retry.")
+        return
+
+    # -------- helpers --------
+    def _components(u: str) -> List[str]:
+        return list(criteria["units"].get(u, {}).get("components", []))
+
+    def _is_atom(u: str) -> bool:
+        return len(_components(u)) == 0
+
+    def _is_assoc_unit(u: str) -> bool:
+        return len(_components(u)) >= 2
+
+    def _color_for_k_assoc(k: int) -> str:
+        if k == 2: return 'yellow'
+        if k == 3: return 'green'
+        if k == 4: return 'orange'
+        return 'red'  # 5+
+
+    def _hub_name(members: Iterable[str]) -> str:
+        return "[" + "-".join(sorted(members)) + "]"
+
+    if min_assoc_w is None:
+        min_assoc_w = getattr(agent.p, "w_learn", 0.75) * 0.9
+
+    # Strong (learned) association keys
+    strong_keys: List[Tuple[FrozenSet[str], float]] = [
+        (key, wt) for key, wt in agent.w.items()
+        if len(key) >= 2 and wt >= min_assoc_w
+    ]
+    strong_keys.sort(key=lambda kv: kv[1], reverse=True)
+    learned_assoc_sets: Set[FrozenSet[str]] = {k for k, _ in strong_keys}
+
+    # Map member-set ↔ association names (for tooltips)
+    from collections import defaultdict
+    member_set_to_units: Dict[FrozenSet[str], Set[str]] = defaultdict(set)
+    for u in criteria["units"].keys():
+        comps = _components(u)
+        if len(comps) >= 2:
+            member_set_to_units[frozenset(comps)].add(u)
+
+    # PyVis network
+    net = Network(notebook=True, height="1020px", width="100%",
+                  bgcolor="#222222", font_color="white", cdn_resources='in_line')
+    if static:
+        net.set_options(f"""
+        {{
+          "layout": {{"randomSeed": {random_seed}, "improvedLayout": true}},
+          "physics": {{
+            "enabled": true,
+            "solver": "barnesHut",
+            "barnesHut": {{
+              "gravitationalConstant": -3500,
+              "centralGravity": 0.2,
+              "springLength": 220,
+              "springConstant": 0.03,
+              "avoidOverlap": 1.0
+            }},
+            "stabilization": {{"enabled": true, "iterations": 400, "updateInterval": 25, "fit": true}}
+          }},
+          "interaction": {{"dragNodes": true, "dragView": true, "zoomView": true, "hover": true}}
+        }}
+        """)
+    else:
+        net.set_options("""
+        {"physics": {"enabled": true, "stabilization": {"enabled": true, "iterations": 200}},
+         "interaction": {"dragNodes": true, "dragView": true, "zoomView": true}}
+        """)
+
+    # Drawing state
+    drawn_nodes: Set[str] = set()
+    drawn_edges: Set[Tuple[str, str]] = set()
+
+    def _add_edge(a: str, b: str, color: str = "white", width: float = 1.4, opacity: float = 0.95):
+        s, t = sorted([a, b])
+        if (s, t) in drawn_edges:
+            return
+        net.add_edge(s, t, color=color, width=width, physics=False, opacity=opacity)
+        drawn_edges.add((s, t))
+
+    def _add_atom(u: str, learned: bool, as_placeholder: bool = False):
+        """Add atomic node. If learned=False, do not draw unless as_placeholder=True (draw hollow)."""
+        if not learned and not as_placeholder:
+            return
+        if u in drawn_nodes:
+            return
+        if learned:
+            exp = agent.exposure.get(u, 0)
+            net.add_node(
+                u, label="", shape='triangle', color='#4a90e2',
+                size=10 + min(exp, 10) * 0.7,
+                title=(f"Atom (learned)\n{u}\nExposure: {exp}" if show_titles else None)
+            )
+        else:
+            # placeholder
+            net.add_node(
+                u, label="", shape='triangle',
+                color={'border':'#777777','background':'rgba(0,0,0,0)',
+                       'highlight':{'border':'#777777','background':'rgba(0,0,0,0.05)'},
+                       'hover':{'border':'#777777','background':'rgba(0,0,0,0.05)'}},
+                borderWidth=2,
+                title=(f"Atom (placeholder)\n{u}" if show_titles else None)
+            )
+        drawn_nodes.add(u)
+
+    def _add_assoc_hub(member_names: List[str], w: float, learned: bool, placeholder: bool = False) -> str:
+        """Add association hub.
+           learned=True → colored ●
+           learned=False & placeholder=True → hollow gray ●
+        """
+        name = _hub_name(member_names)
+        if name in drawn_nodes:
+            return name
+
+        k = len(member_names)
+        if learned and not placeholder:
+            # regular hub
+            labels = sorted(list(member_set_to_units.get(frozenset(member_names), [])))
+            title = None
+            if show_titles:
+                meta = ("\n- " + "\n- ".join(labels)) if labels else ""
+                title = f"Association Hub (k={k})\nw={w:.2f}{meta}\n\nMembers:\n" + "\n".join(sorted(member_names))
+            net.add_node(
+                name, label="", shape='dot', color=_color_for_k_assoc(k),
+                size=15 + 2*k + 6*max(0.0, (w - min_assoc_w)),
+                title=title
+            )
+        else:
+            # placeholder hub (hollow gray)
+            net.add_node(
+                name, label="", shape='dot',
+                color={'border':'#777777','background':'rgba(0,0,0,0)',
+                       'highlight':{'border':'#777777','background':'rgba(0,0,0,0.05)'},
+                       'hover':{'border':'#777777','background':'rgba(0,0,0,0.05)'}},
+                borderWidth=2,
+                size=14 + 2*k,
+                title=("Assoc (placeholder)\n" + name if show_titles else None)
+            )
+        drawn_nodes.add(name)
+        return name
+
+    # Draw learned association hubs first, then connect members according to the rules
+    for key, wt in strong_keys:
+        parts = sorted(list(key))
+        # main hub
+        hub = _add_assoc_hub(parts, w=wt, learned=True, placeholder=False)
+
+        for p in parts:
+            if _is_atom(p):
+                # Atom: if learned → blue ▲ + white edge / if not → hollow ▲ + light gray edge
+                learned_atom = (p in agent.learned_units)
+                _add_atom(p, learned=learned_atom, as_placeholder=not learned_atom)
+                edge_color = "white" if learned_atom else "#AAAAAA"
+                edge_width = 1.6 if learned_atom else 1.1
+                edge_opac  = 0.95 if learned_atom else 0.7
+                _add_edge(hub, p, color=edge_color, width=edge_width, opacity=edge_opac)
+
+            else:
+                # member is a "composite unit" → handle via its components as a sub-hub
+                comps = _components(p)
+                if len(comps) >= 2:
+                    comps_set = frozenset(comps)
+                    if comps_set in learned_assoc_sets:
+                        # sub-composite also learned → draw its hub and connect hub↔subHub by white edge
+                        sub_hub = _add_assoc_hub(comps, w=wt*0.95, learned=True, placeholder=False)
+                        _add_edge(hub, sub_hub, color="white", width=2.0, opacity=0.95)
+                    else:
+                        # sub-composite not learned → draw placeholder hub ● (gray)
+                        sub_hub = _add_assoc_hub(comps, w=wt*0.6, learned=False, placeholder=True)
+                        _add_edge(hub, sub_hub, color="#AAAAAA", width=1.3, opacity=0.75)
+
+                        # and render its members (atoms/composites) under placeholder convention
+                        for a in comps:
+                            if _is_atom(a):
+                                learned_atom = (a in agent.learned_units)
+                                if learned_atom:
+                                    _add_atom(a, learned=True)
+                                    _add_edge(sub_hub, a, color="white", width=1.4, opacity=0.9)
+                                else:
+                                    _add_atom(a, learned=False, as_placeholder=True)
+                                    _add_edge(sub_hub, a, color="#AAAAAA", width=1.0, opacity=0.7)
+                            else:
+                                # nested composite also not learned → placeholder recursion (expand one more level)
+                                sub2 = _components(a)
+                                if len(sub2) >= 2:
+                                    sub_hub2 = _add_assoc_hub(sub2, w=wt*0.5, learned=False, placeholder=True)
+                                    _add_edge(sub_hub, sub_hub2, color="#AAAAAA", width=1.2, opacity=0.75)
+                                    for aa in sub2:
+                                        if _is_atom(aa):
+                                            learned_atom2 = (aa in agent.learned_units)
+                                            if learned_atom2:
+                                                _add_atom(aa, learned=True)
+                                                _add_edge(sub_hub2, aa, color="white", width=1.3, opacity=0.9)
+                                            else:
+                                                _add_atom(aa, learned=False, as_placeholder=True)
+                                                _add_edge(sub_hub2, aa, color="#AAAAAA", width=1.0, opacity=0.7)
+                                else:
+                                    # abnormal structure (components==1) — should not happen; fallback
+                                    learned_atom = (a in agent.learned_units)
+                                    _add_atom(a, learned=learned_atom, as_placeholder=not learned_atom)
+                                    _add_edge(sub_hub, a, color=("white" if learned_atom else "#AAAAAA"),
+                                              width=(1.3 if learned_atom else 1.0),
+                                              opacity=(0.9 if learned_atom else 0.7))
+
+    # Performance warning
+    if len(drawn_nodes) > max_nodes:
+        print(f"⚠️ Nodes={len(drawn_nodes)} exceeds max_nodes={max_nodes}. Rendering may be slow.")
+
+    try:
+        net.write_html(filename)
+    except Exception:
+        net.write_html(filename)
+
+    print(f"✅ Cognitive Atlas (v5) saved to {filename} (min_assoc_w={min_assoc_w:.2f})")
+
+# =====================================================
+# 8) Scenario runner + snapshot visualization utilities (refactor)
+# =====================================================
+from typing import Optional, List, Tuple, Dict, Set, Literal
+import copy
+import random
+from dataclasses import dataclass
+from typing import Optional, List, Tuple, Dict, Literal
+import random
+import copy
+
+# ---------------------------------------------
+# Checkpoint-based re-simulation for collecting snapshots
+# ---------------------------------------------
+def _simulate_with_checkpoints(
+    bundles: List[dict],
+    p: Params,
+    steps: int,
+    seed: Optional[int],
+    checkpoints: List[int],
+):
+    if seed is not None:
+        random.seed(seed)
+    ag = Agent(p)
+    seed_misconception(ag, strong=True)
+    rr = cycle(bundles) if bundles else None
+
+    checkpoints_sorted = sorted(set(s for s in checkpoints if 1 <= s <= steps))
+    snap_map: Dict[int, Agent] = {}
+    success_at: Optional[int] = None
+
+    for s in range(1, steps + 1):
+        bundle_units = next(rr)["units"] if rr else None
+        stim = mix_step(p.rand_ratio, bundle_units, p)
+        ag.step(stim)
+
+        if s in checkpoints_sorted:
+            snap_map[s] = copy.deepcopy(ag)
+
+        if success_at is None and ag.success():
+            success_at = s
+            if s in checkpoints_sorted and s not in snap_map:
+                snap_map[s] = copy.deepcopy(ag)
+            break
+
+    return ag, success_at, snap_map
+
+@dataclass
+class ScenarioResult:
+    label: str
+    bundles_desc: str
+    runs: int
+    steps: int
+    successes: int
+    avg_steps_to_success: Optional[float]
+    success_pick_steps: Optional[List[int]]
+    success_pick_files: Optional[List[str]]
+    fail_pick_steps: Optional[List[int]]
+    fail_pick_files: Optional[List[str]]
+    # Representative agents for pretty tables
+    success_pick_agent: Optional['Agent'] = None
+    fail_pick_agent: Optional['Agent'] = None
+
+# ---------------------------------------------
+# Helper to find one success/failure run and collect snapshots
+# ---------------------------------------------
+from typing import Tuple
+
+def _find_example_run_and_snapshots(
+    bundles: List[dict],
+    p: Params,
+    steps: int,
+    seed: Optional[int],
+    want_success: bool,
+    success_pcts: Tuple[float, ...] = (0.10, 0.30, 0.70, 1.00),  # include 100%
+    max_tries: int = 1000,
+):
+    """
+    - want_success=True:
+        find a seed producing success,
+        collect snapshots at [success_at * pcts] + [success_at] (exact success timing).
+    - want_success=False:
+        find a failure case,
+        collect snapshots at [steps * pcts] (10/30/70/100% of horizon).
+    """
+    base_seed = (seed if seed is not None else 0)
+
+    def _round_and_clip(x: float, lo: int, hi: int) -> int:
+        v = int(round(x))
+        return max(lo, min(hi, v))
+
+    for i in range(max_tries):
+        trial_seed = base_seed + (i if want_success else 10_000 + i)
+
+        # First probe: quick check of success occurrence
+        if trial_seed is not None:
+            random.seed(trial_seed)
+        ag_probe = Agent(p)
+        seed_misconception(ag_probe, strong=True)
+        rr = cycle(bundles) if bundles else None
+
+        success_at = None
+        for s in range(1, steps + 1):
+            bundle_units = next(rr)["units"] if rr else None
+            stim = mix_step(p.rand_ratio, bundle_units, p)
+            ag_probe.step(stim)
+            if ag_probe.success():
+                success_at = s
+                break
+
+        if want_success and (success_at is not None):
+            # success-time checkpoints + exact success step
+            pct_steps = {
+                _round_and_clip(success_at * q, 1, success_at) for q in success_pcts
+            }
+            pct_steps.add(success_at)
+            checkpoints = sorted(pct_steps)
+
+            # official re-run + collect snapshots
+            _, _, snaps = _simulate_with_checkpoints(
+                bundles, p, steps=steps, seed=trial_seed, checkpoints=checkpoints
+            )
+            return success_at, checkpoints, snaps
+
+        if (not want_success) and (success_at is None):
+            # failure: snapshots at 10/30/70/100% of horizon
+            pct_steps = {
+                _round_and_clip(steps * q, 1, steps) for q in success_pcts
+            }
+            pct_steps.add(steps)
+            checkpoints = sorted(pct_steps)
+
+            _, _, snaps = _simulate_with_checkpoints(
+                bundles, p, steps=steps, seed=trial_seed, checkpoints=checkpoints
+            )
+            return None, checkpoints, snaps
+
+    return None, None, {}
+
+# ---------------------------------------------
+# Run a scenario + visualize (refactor):
+#  - reuse run_experiment_unified for stats
+#  - pick one success and one failure example for snapshots
+# ---------------------------------------------
+
+def run_scenario_and_visualize(
+    bundles: List[dict],
+    p: Params,
+    label: str,
+    runs: int = 100,
+    steps: int = 100,
+    seed: Optional[int] = 123,
+    min_assoc_w: Optional[float] = None,
+    max_nodes: int = 450,
+    viz: Literal['v2', 'v3'] = 'v3',
+    success_pcts: Tuple[float, ...] = (0.10, 0.30, 0.70, 1.00),  # include 100%
+) -> ScenarioResult:
+
+    # 1) compute statistics
+    stats = run_experiment_unified(
+        bundles=bundles,
+        p=p,
+        runs=runs,
+        steps=steps,
+        seed=seed,
+        with_levels=False,
+    )
+    p_succ = float(stats.get("P_success", 0.0))
+    successes = int(round(p_succ * runs))
+    avg_steps = stats.get("avg_steps_to_success")
+    avg_steps = (round(float(avg_steps), 2) if avg_steps is not None else None)
+
+    # 2) choose visualization function
+    viz_func = visualize_agent_atlas_assoc_hubs
+    if viz == 'v2' and 'visualize_agent_atlas_edges_only' in globals():
+        viz_func = globals()['visualize_agent_atlas_edges_only']
+    else:
+        viz = 'v3'  # fallback
+
+    # 3) pick example runs (success/failure) → snapshots & agents
+    success_pick_steps = None
+    success_pick_files = None
+    fail_pick_steps = None
+    fail_pick_files = None
+    success_pick_agent = None
+    fail_pick_agent = None
+
+    def _safe_name(s: str) -> str:
+        # filename-safe
+        return re.sub(r'[^A-Za-z0-9._-]+', '_', str(s))
+
+    def _unique_html_filename(basename: str) -> str:
+        # high-resolution timestamp prefix
+        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        return f"{stamp}_{_safe_name(basename)}"
+    
+    saved_once = set()  # (label, outcome, step) tuples
+    
+    # success example
+    if successes > 0:
+        succ_at, succ_steps, succ_snaps = _find_example_run_and_snapshots(
+            bundles, p, steps, seed, want_success=True, success_pcts=success_pcts
+        )
+        if succ_steps and succ_snaps:
+            success_pick_steps = sorted(set(succ_steps))
+            success_pick_files = []
+            if succ_at is not None and succ_at in succ_snaps:
+                success_pick_agent = succ_snaps[succ_at]
+            for st in success_pick_steps:
+                ag_at = succ_snaps.get(st)
+                key = (label, "SUCCESS", st)
+                if ag_at and key not in saved_once:
+                    base = f"viz_{label}_SUCCESS_{viz}_step{st}.html"
+                    fname = _unique_html_filename(base)
+                    viz_func(ag_at, filename=fname, max_nodes=max_nodes, min_assoc_w=min_assoc_w,
+                             static=True, random_seed=7)
+                    success_pick_files.append(fname)
+                    saved_once.add(key)
+
+    # failure example
+    if successes < runs:
+        _, fail_steps_, fail_snaps = _find_example_run_and_snapshots(
+            bundles, p, steps, seed, want_success=False, success_pcts=success_pcts
+        )
+        if fail_steps_ and fail_snaps:
+            fail_pick_steps = sorted(set(fail_steps_))
+            fail_pick_files = []
+            last_st = max(fail_pick_steps) if fail_pick_steps else steps
+            if last_st in fail_snaps:
+                fail_pick_agent = fail_snaps[last_st]
+            for st in fail_pick_steps:
+                ag_at = fail_snaps.get(st)
+                key = (label, "FAIL", st)
+                if ag_at and key not in saved_once:
+                    base = f"viz_{label}_FAIL_{viz}_step{st}.html"
+                    fname = _unique_html_filename(base)
+                    viz_func(ag_at, filename=fname, max_nodes=max_nodes, min_assoc_w=min_assoc_w,
+                             static=True, random_seed=7)
+                    fail_pick_files.append(fname)
+                    saved_once.add(key)
+
+    return ScenarioResult(
+        label=f"{label} ({viz})",
+        bundles_desc="+".join([b["id"] for b in bundles]) if bundles else "(Random only)",
+        runs=runs,
+        steps=steps,
+        successes=successes,
+        avg_steps_to_success=avg_steps,
+        success_pick_steps=success_pick_steps,
+        success_pick_files=success_pick_files,
+        fail_pick_steps=fail_pick_steps,
+        fail_pick_files=fail_pick_files,
+        success_pick_agent=success_pick_agent,
+        fail_pick_agent=fail_pick_agent,
+    )
+
+from typing import List, Tuple, Dict, Optional, Literal
+
+def run_scenarios_and_visualize(
+    scenarios: List[Tuple[str, List[dict]]],
+    p: Params,
+    runs: int = 100,
+    steps: int = 100,
+    seed: Optional[int] = 2025,
+    min_assoc_w: Optional[float] = None,
+    max_nodes: int = 450,
+    viz: Literal['v2','v3'] = 'v3',
+    seed_stride: int = 999
+) -> Dict[str, ScenarioResult]:
+    out: Dict[str, ScenarioResult] = {}
+    for i, (label, bundles) in enumerate(scenarios):
+        si = None if seed is None else seed + i*seed_stride
+        out[label] = run_scenario_and_visualize(
+            bundles=bundles,
+            p=p,
+            label=label,
+            runs=runs,
+            steps=steps,
+            seed=si,
+            min_assoc_w=min_assoc_w,
+            max_nodes=max_nodes,
+            viz=viz,
+        )
+    return out
+
+# ============================================
+# 9) Clean experiment summaries (pretty print)
+# ============================================
+from typing import Sequence
+from typing import Dict, List, Union, Optional, Tuple
+
+def _learned_units_list(agent: 'Agent') -> List[str]:
+    return sorted(agent.learned_units)
+
+def _learned_assocs_list(agent: 'Agent', min_k: int = 2, min_w: Optional[float] = None,
+                         require_units_learned: bool = True) -> List[Tuple[List[str], float]]:
+    if min_w is None:
+        min_w = getattr(agent.p, "w_learn", 0.75) * 0.9
+    rows: List[Tuple[List[str], float]] = []
+    for key, w in agent.w.items():
+        if len(key) < min_k or w < min_w: continue
+        parts = sorted(list(key))
+        if require_units_learned and not all(u in agent.learned_units for u in parts):
+            continue
+        rows.append((parts, w))
+    rows.sort(key=lambda x: -x[1])
+    return rows
+
+def summarize_results_table(
+    results: Union[List['ScenarioResult'], Dict[str, 'ScenarioResult']],
+    p: 'Params',
+    header: str = "Experiment Summary",
+    *,
+    assoc_min_w: Optional[float] = None,
+    require_units_learned_for_assoc: bool = True
+):
+    if isinstance(results, dict):
+        results_list = list(results.values())
+    else:
+        results_list = results
+
+    if not results_list:
+        print(f"\n=== {header} ===")
+        print("(No results)")
+        return
+
+    print(f"\n=== {header} ===")
+    print(f"(runs per scenario ≈ {results_list[0].runs}, steps={results_list[0].steps}, "
+          f"rand_ratio={p.rand_ratio}, random_k={p.random_k}, forgetting_window={p.forgetting_window})")
+    print("-" * 95)
+    print(f"{'Scenario':<26}  {'P_success':>9}  {'avg_steps':>10}  {'successes':>11}")
+    print("-" * 95)
+
+    for res in results_list:
+        avg_txt = f"{res.avg_steps_to_success:.2f}" if res.avg_steps_to_success is not None else "—"
+        p_succ = (res.successes / res.runs) if res.runs > 0 else 0.0
+        print(f"{res.label:<26}  {p_succ:>9.3f}  {avg_txt:>10}  {res.successes:>5}/{res.runs:<5}")
+    print("-" * 95)
+
+    # === print per-scenario agent states (success/failure) ===
+    def _print_agent_tables(tag: str, ag: 'Agent'):
+        print(f"\n[Agent State: {tag}]")
+        # 1) learned units
+        learned_units = _learned_units_list(ag)
+        print(f"  • Learned Units ({len(learned_units)}):")
+        if learned_units:
+            for u in learned_units:
+                print(f"    - {u}")
+        else:
+            print("    (none)")
+
+        # 2) learned associations
+        thr = assoc_min_w if assoc_min_w is not None else getattr(ag.p, "w_learn", 0.75) * 0.9
+        rows = _learned_assocs_list(ag, min_k=2, min_w=thr,
+                                    require_units_learned=require_units_learned_for_assoc)
+        print(f"  • Learned Associations (k≥2, w≥{thr:.2f}, require_units={require_units_learned_for_assoc}) → {len(rows)}")
+        if rows:
+            print(f"    {'k':>2}  {'w':>6}  members")
+            print(f"    {'-'*2}  {'-'*6}  {'-'*40}")
+            for parts, w in rows:
+                print(f"    {len(parts):>2}  {w:>6.2f}  {' + '.join(parts)}")
+        else:
+            print("    (none)")
+
+    for res in results_list:
+        if res.success_pick_agent is not None:
+            _print_agent_tables(f"{res.label} • SUCCESS", res.success_pick_agent)
+        if res.fail_pick_agent is not None:
+            _print_agent_tables(f"{res.label} • FAIL", res.fail_pick_agent)
+
+import os, json, datetime, re
+
+def _safe_name(s: str) -> str:
+    return re.sub(r'[^A-Za-z0-9._-]+', '_', str(s))
+
+def _learned_units_for(agent) -> list:
+    try:
+        return _learned_units_list(agent)
+    except Exception:
+        # Fallback (if agent has no learned_units attr)
+        return sorted(getattr(agent, "learned_units", []))
+
+def _learned_assocs_for(agent, p, assoc_min_w=None, require_units=True) -> list:
+    try:
+        return _learned_assocs_list(
+            agent,
+            min_k=2,
+            min_w=assoc_min_w if assoc_min_w is not None else getattr(p, "w_learn", 0.75) * 0.9,
+            require_units_learned=require_units
+        )
+    except Exception:
+        # Fallback: simple summary
+        rows = []
+        w = getattr(agent, "w", {})
+        thr = assoc_min_w if assoc_min_w is not None else getattr(p, "w_learn", 0.75) * 0.9
+        for key, val in w.items():
+            if len(key) >= 2 and val >= thr:
+                rows.append((sorted(list(key)), float(val)))
+        rows.sort(key=lambda x: -x[1])
+        return rows
+
+def write_scenario_reports(
+    results_dict,
+    header: str = "Experiment Results",
+    p=None,
+    assoc_min_w: float | None = None,
+    require_units_learned_for_assoc: bool = True,
+    out_dir: str = "reports"
+):
+    """
+    results_dict: return value of run_scenarios_and_visualize(...) (Dict[str, ScenarioResult])
+    - If there is at least one success case: write a report for one randomly chosen success
+    - If there is at least one failure case: write a report for one randomly chosen failure
+    ※ For each scenario, up to 2 reports (1 success / 1 failure) can be generated
+    """
+    import os, json, datetime, random
+    os.makedirs(out_dir, exist_ok=True)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    master = {
+        "header": header,
+        "timestamp": ts,
+        "scenarios": []
+    }
+
+    def _safe_name(s: str) -> str:
+        import re
+        return re.sub(r'[^A-Za-z0-9._-]+', '_', str(s))
+
+    def _learned_units_for(agent) -> list:
+        try:
+            return _learned_units_list(agent)
+        except Exception:
+            return sorted(getattr(agent, "learned_units", []))
+
+    def _learned_assocs_for(agent, p, assoc_min_w=None, require_units=True) -> list:
+        try:
+            return _learned_assocs_list(
+                agent,
+                min_k=2,
+                min_w=assoc_min_w if assoc_min_w is not None else getattr(p, "w_learn", 0.75) * 0.9,
+                require_units_learned=require_units
+            )
+        except Exception:
+            rows = []
+            w = getattr(agent, "w", {})
+            thr = assoc_min_w if assoc_min_w is not None else getattr(p, "w_learn", 0.75) * 0.9
+            for key, val in w.items():
+                if len(key) >= 2 and val >= thr:
+                    rows.append((sorted(list(key)), float(val)))
+            rows.sort(key=lambda x: -x[1])
+            return rows
+
+    def _pick_and_write_report_for_outcome(res, outcome: str):
+        """
+        outcome: "SUCCESS" or "FAIL"
+        - If SUCCESS: use res.success_pick_* fields
+        - If FAIL: use res.fail_pick_* fields
+        - Steps/files: pick randomly if possible
+        - Agent: use the representative agent selected for this outcome
+          (produced by run_scenario_and_visualize)
+        """
+        # Check availability
+        if outcome == "SUCCESS":
+            available = (res.successes and res.successes > 0)
+            steps_list = res.success_pick_steps or []
+            files_list = res.success_pick_files or []
+            agent = res.success_pick_agent
+        else:
+            available = (res.successes < res.runs)
+            steps_list = res.fail_pick_steps or []
+            files_list = res.fail_pick_files or []
+            agent = res.fail_pick_agent
+
+        if not available:
+            return  # No such outcome → do not generate report
+
+        # Scenario name (remove suffix like "(v3)" from label)
+        scenario_name = res.label.split(" (")[0]
+
+        # Step selection: choose one randomly if available, otherwise fallback
+        if steps_list:
+            last_step = random.choice(steps_list)
+        else:
+            # Fallback: if SUCCESS → use avg steps, if FAIL → use total steps
+            if outcome == "SUCCESS":
+                last_step = int(round(res.avg_steps_to_success)) if res.avg_steps_to_success else res.steps
+            else:
+                last_step = res.steps
+
+        # File basename
+        base = f"{ts}_{_safe_name(scenario_name)}_{outcome}_{last_step}"
+        json_path = os.path.join(out_dir, base + ".json")
+        txt_path  = os.path.join(out_dir, base + ".txt")
+
+        # Agent snapshot
+        learned_units = []
+        learned_assocs = []
+        if agent is not None and p is not None:
+            learned_units = _learned_units_for(agent)
+            learned_assocs = _learned_assocs_for(
+                agent, p,
+                assoc_min_w=assoc_min_w,
+                require_units=require_units_learned_for_assoc
+            )
+
+        # Diagnostics
+        diagnostics_all = None
+        if agent is not None and p is not None:
+            diagnostics_all = diagnose_all_levels_gaps(
+                agent, p,
+                levels=["narrow", "medium", "advanced"],
+                thr_w=getattr(p, "w_learn", 0.75),
+                require_learn_for_success=getattr(p, "require_unit_learn_for_success", True),
+                top_n=7
+            )
+
+        # JSON data
+        data = {
+            "scenario": scenario_name,
+            "outcome": outcome,
+            "last_step": last_step,
+            "runs": res.runs,
+            "steps_limit": res.steps,
+            "successes": res.successes,
+            "avg_steps_to_success": res.avg_steps_to_success if outcome == "SUCCESS" else None,
+            "bundles_desc": res.bundles_desc,
+            "success_pick_steps": res.success_pick_steps,
+            "success_pick_files": res.success_pick_files,
+            "fail_pick_steps": res.fail_pick_steps,
+            "fail_pick_files": res.fail_pick_files,
+            "agent_snapshot": {
+                "learned_units": learned_units,
+                "learned_associations": [
+                    {"k": len(parts), "w": round(w, 3), "members": parts}
+                    for parts, w in learned_assocs
+                ]
+            },
+            "diagnostics_all_levels": diagnostics_all
+        }
+
+        # Save individual JSON
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        # Save individual TXT (human-readable)
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(f"{header}\n")
+            f.write(f"Timestamp: {ts}\n")
+            f.write(f"Scenario : {scenario_name}\n")
+            f.write(f"Outcome  : {outcome}\n")
+            f.write(f"LastStep : {last_step}\n")
+            f.write(f"Runs/Steps: {res.runs}/{res.steps}\n")
+            f.write(f"Successes: {res.successes}\n")
+            if outcome == "SUCCESS":
+                f.write(f"Avg steps to success: {res.avg_steps_to_success}\n")
+            else:
+                f.write(f"Avg steps to success: —\n")
+            f.write(f"Bundles : {res.bundles_desc}\n")
+            f.write("\n-- Success pick steps --\n")
+            f.write(f"{res.success_pick_steps}\n")
+            f.write("-- Success files --\n")
+            f.write(f"{res.success_pick_files}\n")
+            f.write("\n-- Fail pick steps --\n")
+            f.write(f"{res.fail_pick_steps}\n")
+            f.write("-- Fail files --\n")
+            f.write(f"{res.fail_pick_files}\n")
+
+            if agent is not None:
+                f.write("\n\n[Agent Snapshot]\n")
+                f.write(f"• Learned Units ({len(learned_units)}):\n")
+                for u in learned_units:
+                    f.write(f"  - {u}\n")
+                thr = assoc_min_w if assoc_min_w is not None else (getattr(p, "w_learn", 0.75) * 0.9 if p else 0.68)
+                f.write(f"\n• Learned Associations (k≥2, w≥{thr:.2f}): {len(learned_assocs)}\n")
+                if learned_assocs:
+                    f.write(f"  {'k':>2}  {'w':>6}  members\n")
+                    f.write(f"  {'-'*2}  {'-'*6}  {'-'*40}\n")
+                    for parts, w in learned_assocs:
+                        f.write(f"  {len(parts):>2}  {w:>6.2f}  {' + '.join(parts)}\n")
+
+            if (agent is not None) and diagnostics_all:
+                f.write("\n[Diagnostics by Level]\n")
+                for lvl in ["narrow", "medium", "advanced"]:
+                    d = diagnostics_all.get(lvl, {})
+                    f.write(f"\n• {lvl.upper()}  reached={d.get('reached')}\n")
+                    if not d.get("reached"):
+                        f.write(f"  best_tuple: {d.get('best_tuple')}\n")
+                        f.write(f"  best_tuple_score(0~1): {d.get('best_tuple_score')}\n")
+                        f.write("  missing (top):\n")
+                        for m in d.get("missing", []):
+                            if m.get("type") == "composite":
+                                f.write(f"    - {m['unit']} [composite] w={m.get('assoc_w')} < need {m.get('assoc_needed')}"
+                                        f"{' & not learned' if m.get('need_learn') else ''}\n")
+                            else:
+                                f.write(f"    - {m['unit']} [atomic] not learned\n")
+
+        # Add to master summary
+        master["scenarios"].append({
+            "file_base": base,
+            "scenario": scenario_name,
+            "outcome": outcome,
+            "last_step": last_step,
+            "successes": res.successes,
+            "avg_steps_to_success": res.avg_steps_to_success
+        })
+
+    # --- Main loop: generate one report for SUCCESS and one for FAIL per scenario ---
+    for res in results_dict.values():
+        _pick_and_write_report_for_outcome(res, "SUCCESS")
+        _pick_and_write_report_for_outcome(res, "FAIL")
+
+    # Save master summary JSON
+    master_path = os.path.join(out_dir, f"{ts}_summary.json")
+    with open(master_path, "w", encoding="utf-8") as f:
+        json.dump(master, f, ensure_ascii=False, indent=2)
+
+    print(f"📁 Saved per-scenario reports in '{out_dir}/' and master summary: {os.path.basename(master_path)}")
+
