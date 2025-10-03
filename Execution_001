@@ -1,3 +1,5 @@
+# All codes were generated with ChatGPT-5
+
 p = Params(
     forgetting_window=5,
     rand_ratio=0.2,
